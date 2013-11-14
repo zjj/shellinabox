@@ -970,8 +970,11 @@ static pam_handle_t *internalLogin(struct Service *service, struct Utmp *utmp,
   if (service->authUser == 2 /* SSH */) {
     // Just ask for the user name. SSH will negotiate the password
     char *user                 = NULL;
+    char *serverip             = NULL;
     char *prompt;
-    check(prompt               = stringPrintf(NULL, "%s login: ", hostname));
+
+    check(prompt               = stringPrintf(NULL, "login: "));
+
     for (;;) {
       if (read_string(1, prompt, &user) <= 0) {
         free(user);
@@ -995,24 +998,59 @@ static pam_handle_t *internalLogin(struct Service *service, struct Utmp *utmp,
       user                     = NULL;
     }
     free(prompt);
+
+    //replace the @xxxxx with @serverip
     char *cmdline              = stringPrintf(NULL, service->cmdline, user);
     free(user);
 
-    // Replace '@localhost' with the actual host name. This results in a nicer
-    // prompt when SSH asks for the password.
     char *ptr                  = strrchr(cmdline, '@');
+    if (!strcmp(ptr + 1, "interactive")) {
+      check(prompt               = stringPrintf(NULL, "serverIP: "));
+      for (;;) {
+        if (read_string(1, prompt, &serverip) <= 0) {
+          free(serverip);
+          free(prompt);
+          _exit(1);
+        }
+        if (*serverip) {
+          for (char *s = serverip; *s; s++) {
+            char ch           = *s;
+            if (!((ch >= '0' && ch <= '9') ||
+                (ch == '.'))){
+              goto invalid_server_ip;
+            }
+          }
+          break;
+        }
+        invalid_server_ip:
+          free(serverip);
+          serverip                     = NULL;
+      }
+      free(prompt);
+
+      int tail                 = strlen(ptr + 1); 
+      int offset               = ptr + 1 - cmdline;
+      check(cmdline            = realloc(cmdline,
+                                        strlen(cmdline) + strlen(serverip) -
+                                        tail + 1)); 
+      ptr                      = cmdline + offset;
+      *ptr                     = '\000';
+      strncat(ptr, serverip, strlen(serverip));
+      free(serverip);
+    }
+
     if (!strcmp(ptr + 1, "localhost")) {
       int offset               = ptr + 1 - cmdline;
       check(cmdline            = realloc(cmdline,
                                          strlen(cmdline) + strlen(fqdn) -
-                                         strlen("localhost") + 1));
+                                         strlen("localhost") + 1)); 
       ptr                      = cmdline + offset;
       *ptr                     = '\000';
       strncat(ptr, fqdn, strlen(fqdn));
-    }
+    }   
 
-    free((void *)service->cmdline);
-    service->cmdline           = cmdline;
+    free((void*)service->cmdline);
+    service->cmdline = cmdline;
 
     // Run SSH as an unprivileged user
     if ((service->uid          = restricted) == 0) {
